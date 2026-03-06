@@ -36,7 +36,7 @@ export default function InputBar({ onSend, onAbort, isActive, disabled }) {
   const [model, setModel] = useState(() => readLS('claude-ui:model', 'opus'));
   const [mode, setMode] = useState(() => readLS('claude-ui:mode', 'Chat'));
   const [dangerouslySkipPermissions, setDangerouslySkipPermissions] = useState(
-    () => readLS('claude-ui:permissions', false)
+    () => readLS('claude-ui:permissions', true)
   );
   const [modelOpen, setModelOpen] = useState(false);
   const [modeOpen, setModeOpen] = useState(false);
@@ -181,7 +181,12 @@ export default function InputBar({ onSend, onAbort, isActive, disabled }) {
         <div ref={permRef} className="relative">
           <button
             onClick={() => { setPermOpen((o) => !o); setModelOpen(false); setModeOpen(false); setAgentOpen(false); }}
-            className="flex items-center gap-1 px-2 py-1 rounded-md text-xs text-zinc-300 bg-zinc-800 border border-zinc-700/60 hover:bg-zinc-700/70 hover:text-zinc-100 transition-colors"
+            className={[
+              'flex items-center gap-1 px-2 py-1 rounded-md text-xs border transition-colors',
+              dangerouslySkipPermissions
+                ? 'text-red-400 bg-red-950/60 border-red-800/60 hover:bg-red-900/60 hover:text-red-300'
+                : 'text-zinc-300 bg-zinc-800 border-zinc-700/60 hover:bg-zinc-700/70 hover:text-zinc-100',
+            ].join(' ')}
           >
             {permLabel}
             <ChevronDown />

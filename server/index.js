@@ -2,7 +2,21 @@ import express from "express";
 import { createServer } from "http";
 import { WebSocketServer } from "ws";
 import { v4 as uuid } from "uuid";
+import { fileURLToPath } from "url";
+import { dirname, join } from "path";
+import { existsSync } from "fs";
+import { homedir } from "os";
 import db from "./db.js";
+
+/** Normalize project path: strip leading @, expand ~ */
+function normalizePath(p) {
+  if (!p) return p;
+  // Strip leading @ (used as shorthand prefix in some UIs)
+  if (p.startsWith("@")) p = p.slice(1);
+  if (p === "~") return homedir();
+  if (p.startsWith("~/")) return homedir() + p.slice(1);
+  return p;
+}
 import {
   createBridge,
   getBridge,
@@ -10,8 +24,17 @@ import {
   listActiveBridges,
 } from "./claude-bridge.js";
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
 const app = express();
 app.use(express.json());
+
+// Serve built frontend in production
+const distPath = join(__dirname, "..", "dist");
+if (existsSync(distPath)) {
+  app.use(express.static(distPath));
+}
 
 // --- REST API ---
 
@@ -22,7 +45,11 @@ app.get("/api/projects", (req, res) => {
 });
 
 app.post("/api/projects", (req, res) => {
-  const { name, path } = req.body;
+  const { name, path: rawPath } = req.body;
+  const path = normalizePath(rawPath?.trim());
+  if (!path || !existsSync(path)) {
+    return res.status(400).json({ error: `Directory not found: ${path}` });
+  }
   const id = uuid();
   db.prepare("INSERT INTO projects (id, name, path) VALUES (?, ?, ?)").run(
     id,
@@ -192,6 +219,9 @@ wss.on("connection", (ws) => {
           return;
         }
 
+        // Expand ~ in project path (handles legacy DB entries)
+        thread.project_path = normalizePath(thread.project_path);
+
         // Save user message
         const userMsgId = uuid();
         db.prepare(
@@ -207,6 +237,27 @@ wss.on("connection", (ws) => {
             content,
           },
         });
+
+        // Auto-generate title from first prompt if still default
+        if (thread.title === "New thread") {
+          const newTitle = content
+            .replace(/\s+/g, " ")
+            .trim()
+            .slice(0, 60)
+            .replace(/\s\S*$/, (m) => (m.length < 10 ? "" : m)) // trim to word boundary unless very short
+            || content.slice(0, 60);
+          const finalTitle = newTitle.length < content.trim().length
+            ? newTitle + "..."
+            : newTitle;
+          db.prepare(
+            "UPDATE threads SET title = ?, updated_at = datetime('now') WHERE id = ?"
+          ).run(finalTitle, threadId);
+          broadcast(threadId, {
+            type: "thread_updated",
+            threadId,
+            title: finalTitle,
+          });
+        }
 
         // Get or create bridge
         let bridge = getBridge(threadId);
@@ -375,7 +426,14 @@ wss.on("connection", (ws) => {
   });
 });
 
+// SPA fallback — serve index.html for non-API routes in production
+if (existsSync(distPath)) {
+  app.get("/{*splat}", (req, res) => {
+    res.sendFile(join(distPath, "index.html"));
+  });
+}
+
 const PORT = process.env.PORT || 3775;
-server.listen(PORT, () => {
+server.listen(PORT, "0.0.0.0", () => {
   console.log(`claude-ui server running on http://localhost:${PORT}`);
 });

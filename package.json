@@ -3,11 +3,18 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "main": "electron/main.cjs",
   "scripts": {
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
     "dev:server": "node --watch server/index.js",
     "dev:client": "vite",
-    "build": "vite build"
+    "build": "vite build",
+    "electron:dev": "concurrently \"npm run dev:server\" \"npm run dev:client\" \"ELECTRON_DEV=1 electron .\"",
+    "electron:prepare": "npm run build && node scripts/prepare-server.cjs",
+    "electron:build": "npm run electron:prepare && electron-builder --dir",
+    "electron:build:mac": "npm run electron:prepare && electron-builder --mac",
+    "electron:build:win": "npm run electron:prepare && electron-builder --win",
+    "electron:build:linux": "npm run electron:prepare && electron-builder --linux"
   },
   "dependencies": {
     "diff": "^8.0.3",
@@ -21,10 +28,57 @@
     "@vitejs/plugin-react": "^4.4.1",
     "autoprefixer": "^10.4.20",
     "concurrently": "^9.1.2",
+    "electron": "^40.8.0",
+    "electron-builder": "^26.8.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-markdown": "^10.1.0",
     "tailwindcss": "^4.1.0",
     "vite": "^6.3.5"
+  },
+  "build": {
+    "appId": "com.claude-chat.app",
+    "productName": "Claude Chat",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "build-server",
+        "to": "app-server",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "afterPack": "electron/afterPack.cjs",
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.developer-tools",
+      "darkModeSupport": true
+    },
+    "dmg": {
+      "title": "Claude Chat",
+      "contents": [
+        { "x": 130, "y": 220 },
+        { "x": 410, "y": 220, "type": "link", "path": "/Applications" }
+      ]
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Development"
+    }
   }
 }

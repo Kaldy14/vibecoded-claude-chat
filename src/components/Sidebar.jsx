@@ -20,6 +20,23 @@ function FolderIcon() {
   );
 }
 
+function StatusIndicator({ status }) {
+  if (status === 'working') {
+    return (
+      <span className="flex-shrink-0 relative flex items-center justify-center w-4 h-4" title="Working...">
+        <span className="absolute w-2.5 h-2.5 rounded-full bg-emerald-400/20 animate-ping" />
+        <span className="relative w-1.5 h-1.5 rounded-full bg-emerald-400" />
+      </span>
+    );
+  }
+  if (status === 'done') {
+    return (
+      <span className="flex-shrink-0 w-1.5 h-1.5 rounded-full bg-[#e89b47]" title="New response" />
+    );
+  }
+  return null;
+}
+
 export default function Sidebar({
   projects = [],
   threads = {},
@@ -31,6 +48,7 @@ export default function Sidebar({
   onDeleteThread,
   onDeleteProject,
   activeSessions = new Set(),
+  threadNotifications = new Set(),
 }) {
   const [expanded, setExpanded] = useState(() => {
     const map = {};
@@ -46,8 +64,8 @@ export default function Sidebar({
 
   return (
     <div className="flex flex-col h-full w-64 bg-zinc-950 border-r border-zinc-800/60 select-none">
-      {/* Header */}
-      <div className="flex items-center gap-2.5 px-4 py-4 border-b border-zinc-800/60">
+      {/* Header — extra top padding for macOS Electron traffic lights */}
+      <div className="flex items-center gap-2.5 px-4 pt-10 pb-3 border-b border-zinc-800/60" style={{ WebkitAppRegion: 'no-drag' }}>
         <span className="w-6 h-6 rounded-sm bg-[#e89b47] flex items-center justify-center flex-shrink-0">
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
             <circle cx="6" cy="6" r="5" stroke="white" strokeWidth="1.5" />
@@ -137,6 +155,8 @@ export default function Sidebar({
                   {projectThreads.map((thread) => {
                     const isActive = thread.id === activeThreadId;
                     const hasSession = activeSessions.has(thread.id);
+                    const hasNotification = threadNotifications.has(thread.id);
+                    const status = hasSession ? 'working' : hasNotification ? 'done' : 'idle';
 
                     return (
                       <div
@@ -145,30 +165,35 @@ export default function Sidebar({
                           'sidebar-thread group relative flex items-center gap-2 px-3 py-1.5 cursor-pointer text-sm',
                           isActive
                             ? 'bg-zinc-800/80 border-l-2 border-[#e89b47] text-zinc-50'
-                            : 'border-l-2 border-transparent text-zinc-400 hover:bg-zinc-800/70 hover:text-zinc-200',
+                            : hasNotification
+                              ? 'border-l-2 border-[#e89b47]/50 text-zinc-200 bg-[#e89b47]/[0.04] hover:bg-zinc-800/70'
+                              : 'border-l-2 border-transparent text-zinc-400 hover:bg-zinc-800/70 hover:text-zinc-200',
                         ].join(' ')}
                         onClick={() => onSelectThread && onSelectThread(thread.id, project.id)}
                         onMouseEnter={() => setHoveredThread(thread.id)}
                         onMouseLeave={() => setHoveredThread(null)}
                       >
-                        {/* Active session dot */}
-                        {hasSession && (
-                          <span className="flex-shrink-0 w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                        )}
+                        {/* Status indicator */}
+                        <StatusIndicator status={status} />
 
                         {/* Thread title */}
-                        <span className="flex-1 truncate leading-tight">
+                        <span className={`flex-1 truncate leading-tight ${hasNotification ? 'font-medium' : ''}`}>
                           {thread.title || 'Untitled'}
                         </span>
 
-                        {/* Relative time or delete button */}
-                        {hoveredThread === thread.id ? (
+                        {/* Relative time (always present for stable layout) */}
+                        <span className={`flex-shrink-0 text-xs text-zinc-600 ${hoveredThread === thread.id ? 'invisible' : ''}`}>
+                          {relativeTime(thread.updated_at)}
+                        </span>
+
+                        {/* Delete button overlaid on hover */}
+                        {hoveredThread === thread.id && (
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
                               onDeleteThread && onDeleteThread(thread.id);
                             }}
-                            className="flex-shrink-0 p-1 rounded-md text-zinc-500 hover:text-red-400 hover:bg-zinc-700/60 transition-colors"
+                            className="absolute right-2 flex-shrink-0 p-1 rounded-md text-zinc-500 hover:text-red-400 hover:bg-zinc-700/60 transition-colors"
                             title="Delete thread"
                             aria-label="Delete thread"
                           >
@@ -176,10 +201,6 @@ export default function Sidebar({
                               <path d="M2 2l7 7M9 2l-7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
                             </svg>
                           </button>
-                        ) : (
-                          <span className="flex-shrink-0 text-xs text-zinc-600">
-                            {relativeTime(thread.updated_at)}
-                          </span>
                         )}
                       </div>
                     );

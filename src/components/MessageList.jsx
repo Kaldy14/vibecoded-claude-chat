@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, Component } from "react";
+import { useEffect, useRef, useState, useMemo, Component } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import DiffView from "./DiffView.jsx";
@@ -97,18 +97,99 @@ function ThinkingIndicator() {
   );
 }
 
+// --- Elapsed Time (live counter for working agents) ---
+function ElapsedTime({ startTime }) {
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setElapsed(Math.floor((Date.now() - startTime) / 1000));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [startTime]);
+  const mins = Math.floor(elapsed / 60);
+  const secs = elapsed % 60;
+  return <span className="tabular-nums">{mins > 0 ? `${mins}m ${secs}s` : `${secs}s`}</span>;
+}
+
+// --- Subagent working spinner ---
+function SubagentSpinner() {
+  return (
+    <>
+      <style>{`
+        @keyframes subagent-orbit {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
+        }
+      `}</style>
+      <span className="relative inline-flex items-center justify-center w-4 h-4 flex-shrink-0">
+        <span className="absolute w-3.5 h-3.5 rounded-full border border-[#e89b47]/30" />
+        <span
+          className="absolute w-3.5 h-3.5 rounded-full border-t border-[#e89b47]"
+          style={{ animation: 'subagent-orbit 1s linear infinite' }}
+        />
+        <span className="w-1 h-1 rounded-full bg-[#e89b47]" />
+      </span>
+    </>
+  );
+}
+
+// --- Parse token/cost info from agent result text ---
+function parseAgentMetrics(resultText) {
+  if (!resultText || typeof resultText !== 'string') return null;
+  const metrics = {};
+
+  // Try to find token counts (various patterns Claude Code might output)
+  const tokenMatch = resultText.match(/(\d[\d,]+)\s*tokens?\s*(used|consumed|total)/i)
+    || resultText.match(/(input|output)\s*tokens?[:\s]*(\d[\d,]+)/i);
+  if (tokenMatch) {
+    metrics.tokens = tokenMatch[0];
+  }
+
+  // Cost patterns
+  const costMatch = resultText.match(/\$[\d.]+/);
+  if (costMatch) {
+    metrics.cost = costMatch[0];
+  }
+
+  // Duration patterns
+  const durationMatch = resultText.match(/(\d+\.?\d*)\s*s(econds?)?/i);
+  if (durationMatch) {
+    metrics.duration = durationMatch[0];
+  }
+
+  return Object.keys(metrics).length > 0 ? metrics : null;
+}
+
+// --- Detect subagent-like tools ---
+function isSubagentTool(name) {
+  return name === "Agent" || name === "Task" || name === "TaskCreate"
+    || name === "TaskGet" || name === "TeamCreate" || name === "SendMessage"
+    || name.startsWith("dispatch") || name.startsWith("subagent");
+}
+
 // --- Tool Block ---
-function ToolBlock({ tool }) {
+function ToolBlock({ tool, isSessionActive }) {
   const name = tool.name || "Tool";
   const input = tool.input || {};
   const hasDiff = (name === "Edit") && input.file_path && (input.old_string !== undefined || input.new_string !== undefined);
   const hasWriteContent = (name === "Write") && input.file_path && input.content !== undefined;
-  const shouldAutoExpand = hasDiff || hasWriteContent;
+  const isAgent = isSubagentTool(name);
+  const shouldAutoExpand = hasDiff || hasWriteContent || (isAgent && !tool.result);
   const [open, setOpen] = useState(shouldAutoExpand);
   const result = tool.result;
   const style = getToolStyle(name);
+  const [spawnTime] = useState(() => Date.now());
 
   const summary = (() => {
+    if (isAgent) {
+      // For agents, show the prompt/task as summary
+      const prompt = input.prompt || input.task || input.description || input.message;
+      if (prompt) {
+        const text = typeof prompt === 'string' ? prompt : JSON.stringify(prompt);
+        return text.length > 100 ? text.slice(0, 100) + "..." : text;
+      }
+      if (input.subagent_type) return input.subagent_type;
+    }
     if (input.file_path || input.path) return input.file_path || input.path;
     if (input.command) {
       const cmd = input.command;
@@ -120,26 +201,99 @@ function ToolBlock({ tool }) {
   })();
   const hasBashCmd = (name === "Bash") && input.command;
   const hasResult = result !== undefined && result !== null;
-  const isGenericInput = !hasDiff && !hasWriteContent && !hasBashCmd && Object.keys(input).length > 0;
+  const isWorking = isAgent && !hasResult && isSessionActive;
+  const isGenericInput = !hasDiff && !hasWriteContent && !hasBashCmd && !isAgent && Object.keys(input).length > 0;
+  const agentMetrics = useMemo(() => hasResult ? parseAgentMetrics(result) : null, [hasResult, result]);
+
+  // Auto-expand agents when they start working
+  useEffect(() => {
+    if (isAgent && !hasResult && isSessionActive) setOpen(true);
+  }, [isAgent, hasResult, isSessionActive]);
 
   return (
-    <div className={`tool-block rounded-lg border ${style.border} ${style.bg} overflow-hidden`}>
+    <div className={`tool-block rounded-lg border ${isWorking ? 'border-[#e89b47]/40 bg-[#e89b47]/[0.06]' : `${style.border} ${style.bg}`} overflow-hidden transition-colors duration-300`}>
       <button
         className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-white/[0.03] transition-colors"
         onClick={() => setOpen((o) => !o)}
       >
         <ChevronIcon open={open} />
-        <span className={`text-xs font-semibold font-mono ${style.text}`}>{name}</span>
+
+        {/* Agent spinner or tool name */}
+        {isWorking ? (
+          <SubagentSpinner />
+        ) : null}
+        <span className={`text-xs font-semibold font-mono ${isAgent ? 'text-[#e89b47]' : style.text}`}>{name}</span>
+
+        {/* Subagent type badge */}
+        {isAgent && input.subagent_type && (
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#e89b47]/10 text-[#e89b47]/80 font-mono">
+            {input.subagent_type}
+          </span>
+        )}
+
+        {/* Model badge */}
+        {isAgent && input.model && (
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-500 font-mono">
+            {input.model}
+          </span>
+        )}
+
         {summary && (
           <span className="truncate text-xs text-zinc-500 font-mono">{summary}</span>
         )}
-        {hasResult && !open && (
-          <span className="ml-auto text-[10px] text-zinc-600 uppercase tracking-wider">done</span>
-        )}
+
+        {/* Right side: status */}
+        <span className="ml-auto flex items-center gap-2 flex-shrink-0">
+          {isWorking && (
+            <>
+              <span className="text-[10px] text-[#e89b47]/70 font-mono">
+                <ElapsedTime startTime={spawnTime} />
+              </span>
+              <span className="text-[10px] text-[#e89b47]/60 uppercase tracking-wider">working</span>
+            </>
+          )}
+          {hasResult && !open && !isAgent && (
+            <span className="text-[10px] text-zinc-600 uppercase tracking-wider">done</span>
+          )}
+          {hasResult && isAgent && (
+            <span className="flex items-center gap-2">
+              {agentMetrics?.cost && (
+                <span className="text-[10px] text-zinc-500 font-mono">{agentMetrics.cost}</span>
+              )}
+              {agentMetrics?.tokens && (
+                <span className="text-[10px] text-zinc-500 font-mono">{agentMetrics.tokens}</span>
+              )}
+              <span className="text-[10px] text-emerald-500/70 uppercase tracking-wider">done</span>
+            </span>
+          )}
+        </span>
       </button>
 
       {open && (
         <div className="border-t border-zinc-700/30 bg-zinc-950/30">
+          {/* Agent task description */}
+          {isAgent && (input.prompt || input.task || input.description) && (
+            <div className="p-2">
+              <div className="text-[10px] text-zinc-600 mb-1 px-1 uppercase tracking-wider font-medium">Task</div>
+              <div className="text-xs text-zinc-300 bg-zinc-950/50 rounded p-2 border border-zinc-700/30 leading-relaxed">
+                {(input.prompt || input.task || input.description).length > 500
+                  ? (input.prompt || input.task || input.description).slice(0, 500) + "..."
+                  : (input.prompt || input.task || input.description)}
+              </div>
+            </div>
+          )}
+
+          {/* Agent working state */}
+          {isWorking && (
+            <div className="px-3 py-2 flex items-center gap-2">
+              <SubagentSpinner />
+              <span className="text-xs text-[#e89b47]/60">Subagent is working...</span>
+              <span className="text-[10px] text-zinc-600 font-mono ml-auto">
+                <ElapsedTime startTime={spawnTime} />
+              </span>
+            </div>
+          )}
+
           {hasDiff && (
             <div className="p-2">
               <DiffView
@@ -181,13 +335,22 @@ function ToolBlock({ tool }) {
           )}
 
           {hasResult && (
-            <div className={`p-2 ${(hasDiff || hasWriteContent || hasBashCmd || isGenericInput) ? "pt-0" : ""}`}>
+            <div className={`p-2 ${(hasDiff || hasWriteContent || hasBashCmd || isGenericInput || isAgent) ? "pt-0" : ""}`}>
               <div className="text-[10px] text-zinc-600 mb-1 px-1 uppercase tracking-wider font-medium">Output</div>
               <pre className="whitespace-pre-wrap break-all text-xs text-zinc-400 font-mono bg-zinc-950/50 rounded p-2 max-h-60 overflow-y-auto border border-zinc-700/30">
                 {typeof result === "string"
                   ? (result.length > 5000 ? result.slice(0, 5000) + "\n... (truncated)" : result)
                   : JSON.stringify(result, null, 2)}
               </pre>
+            </div>
+          )}
+
+          {/* Agent completion metrics */}
+          {hasResult && isAgent && agentMetrics && (
+            <div className="px-3 py-1.5 border-t border-zinc-700/20 flex items-center gap-3 text-[10px] text-zinc-500 font-mono">
+              {agentMetrics.tokens && <span>{agentMetrics.tokens}</span>}
+              {agentMetrics.cost && <span>{agentMetrics.cost}</span>}
+              {agentMetrics.duration && <span>{agentMetrics.duration}</span>}
             </div>
           )}
         </div>
@@ -312,7 +475,7 @@ function UserMessage({ message }) {
   );
 }
 
-function AssistantMessage({ message, streaming, isStreaming }) {
+function AssistantMessage({ message, streaming, isStreaming, isSessionActive }) {
   const text =
     typeof message.content === "string"
       ? message.content
@@ -340,7 +503,7 @@ function AssistantMessage({ message, streaming, isStreaming }) {
           <div className="text-xs font-medium text-[#e89b47]/70 mb-1">Claude</div>
 
           {allTools.map((tool, i) => (
-            <ToolBlock key={tool.id || i} tool={tool} />
+            <ToolBlock key={tool.id || i} tool={tool} isSessionActive={isSessionActive} />
           ))}
 
           {displayText && (
@@ -376,7 +539,7 @@ function AssistantMessage({ message, streaming, isStreaming }) {
   );
 }
 
-function SystemMessage({ message }) {
+function SystemMessage({ message, isSessionActive }) {
   const tools =
     message.metadata?.tools ||
     (Array.isArray(message.content)
@@ -399,7 +562,7 @@ function SystemMessage({ message }) {
     <div className="message-row system-message">
       <div className="max-w-4xl ml-9 space-y-1.5">
         {tools.map((tool, i) => (
-          <ToolBlock key={tool.id || i} tool={tool} />
+          <ToolBlock key={tool.id || i} tool={tool} isSessionActive={isSessionActive} />
         ))}
         {text && !tools.length && (
           <p className="text-xs text-zinc-500 font-mono">{text}</p>
@@ -411,7 +574,7 @@ function SystemMessage({ message }) {
 
 // --- Main List ---
 
-export default function MessageList({ messages = [], streamingContent = "", isStreaming = false, isThinking = false }) {
+export default function MessageList({ messages = [], streamingContent = "", isStreaming = false, isThinking = false, isSessionActive = false }) {
   const bottomRef = useRef(null);
 
   useEffect(() => {
@@ -449,10 +612,11 @@ export default function MessageList({ messages = [], streamingContent = "", isSt
               message={msg}
               streaming={isLastAssistant && isStreaming ? streamingContent : undefined}
               isStreaming={isLastAssistant && isStreaming}
+              isSessionActive={isSessionActive}
             />
           );
         }
-        return <SystemMessage key={msg.id || idx} message={msg} />;
+        return <SystemMessage key={msg.id || idx} message={msg} isSessionActive={isSessionActive} />;
       })}
 
       {/* Streaming content with no prior assistant message */}

@@ -1,5 +1,37 @@
-import { spawn } from "child_process";
+import { spawn, execFileSync } from "child_process";
 import { EventEmitter } from "events";
+import { existsSync } from "fs";
+
+/** Resolve the full path to a working claude binary once at startup */
+let claudeBin = null;
+
+// Candidates in priority order — prefer the real binary over wrappers
+const home = process.env.HOME || "";
+const candidates = [
+  `${home}/.local/bin/claude`,
+  "/usr/local/bin/claude",
+  "/opt/homebrew/bin/claude",
+];
+try {
+  const whichResult = execFileSync("which", ["claude"], { encoding: "utf-8" }).trim();
+  if (whichResult && !candidates.includes(whichResult)) {
+    candidates.push(whichResult);
+  }
+} catch {}
+
+// Just check existence — don't run --version as broken node_modules can interfere
+for (const c of candidates) {
+  if (existsSync(c)) {
+    claudeBin = c;
+    break;
+  }
+}
+
+if (!claudeBin) {
+  console.error("[claude-bridge] ERROR: could not find claude binary!");
+  claudeBin = "claude";
+}
+console.log(`[claude-bridge] using claude binary: ${claudeBin}`);
 
 /**
  * Manages Claude Code interactions per thread.
@@ -55,11 +87,11 @@ export class ClaudeBridge extends EventEmitter {
     // The prompt goes as the last argument
     args.push(prompt);
 
-    console.log(`[bridge:${this.threadId.slice(0,8)}] sessionId: ${this.sessionId || 'NONE (new session)'}`);
+    console.log(`[bridge:${this.threadId.slice(0,8)}] hasSession: ${this.hasSession}`);
     console.log(`[bridge:${this.threadId.slice(0,8)}] spawning: claude ${args.join(" ").substring(0, 200)}...`);
     console.log(`[bridge:${this.threadId.slice(0,8)}] cwd: ${this.cwd}`);
 
-    this.process = spawn("claude", args, {
+    this.process = spawn(claudeBin, args, {
       cwd: this.cwd,
       env: { ...process.env },
       stdio: ["pipe", "pipe", "pipe"],
@@ -84,6 +116,7 @@ export class ClaudeBridge extends EventEmitter {
             this.hasSession = true;
             console.log(`[bridge:${this.threadId.slice(0,8)}] session established: ${msg.session_id}`);
           }
+          this.hasProducedOutput = true;
           this.emit("message", msg);
         } catch {
           // partial JSON, ignore
@@ -96,6 +129,8 @@ export class ClaudeBridge extends EventEmitter {
       this.emit("stderr", data.toString());
     });
 
+    this.hasProducedOutput = false;
+
     this.process.on("close", (code) => {
       // Flush remaining buffer
       if (this.buffer.trim()) {
@@ -104,12 +139,20 @@ export class ClaudeBridge extends EventEmitter {
           if (msg.session_id && !this.hasSession) {
             this.hasSession = true;
           }
+          this.hasProducedOutput = true;
           this.emit("message", msg);
         } catch {}
       }
       this.buffer = "";
       this.running = false;
       this.process = null;
+
+      // If process exited with no output at all, emit an error so the UI knows
+      if (!this.hasProducedOutput && code !== 0) {
+        console.error(`[bridge:${this.threadId.slice(0,8)}] process exited with code ${code} and no output`);
+        this.emit("error", new Error(`Claude process exited with code ${code} without producing output. This may indicate rate limiting or an authentication issue.`));
+      }
+
       this.emit("close", code);
     });
 

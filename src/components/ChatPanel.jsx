@@ -58,8 +58,9 @@ export default function ChatPanel({ threadId, projectId, threadTitle, projectPat
       });
   }, [threadId]);
 
-  // Track session cost from result messages
+  // Track session cost and context usage from result messages
   const [sessionCost, setSessionCost] = useState(null);
+  const [contextUsage, setContextUsage] = useState(null); // { input_tokens, cache_read, cache_creation }
 
   // WebSocket message handler
   const handleWsMessage = useCallback((msg) => {
@@ -140,6 +141,14 @@ export default function ChatPanel({ threadId, projectId, threadTitle, projectPat
 
           if (d.total_cost_usd) {
             setSessionCost((prev) => (prev || 0) + d.total_cost_usd);
+          }
+
+          if (d.usage) {
+            setContextUsage({
+              input_tokens: d.usage.input_tokens || 0,
+              cache_read: d.usage.cache_read_input_tokens || 0,
+              cache_creation: d.usage.cache_creation_input_tokens || 0,
+            });
           }
 
           setStreamingContent((prev) => {
@@ -248,6 +257,13 @@ export default function ChatPanel({ threadId, projectId, threadTitle, projectPat
     }
   }, [threadId]);
 
+  const handleCompact = useCallback(() => {
+    if (!threadId || isActive) return;
+    setIsActive(true);
+    setStreamingContent("");
+    sendMessage(threadId, "/compact", { projectPath });
+  }, [threadId, isActive, projectPath]);
+
   const handleTitleSubmit = () => {
     setEditingTitle(false);
     // TODO: persist title via API if needed
@@ -266,8 +282,8 @@ export default function ChatPanel({ threadId, projectId, threadTitle, projectPat
 
   return (
     <div className="flex flex-col h-full bg-zinc-950">
-      {/* Top bar */}
-      <div className="flex items-center gap-3 border-b border-zinc-800/60 px-4 py-3 shrink-0">
+      {/* Top bar — extra top padding for macOS Electron title bar */}
+      <div className="flex items-center gap-3 border-b border-zinc-800/60 px-4 pt-10 pb-3 shrink-0" style={{ WebkitAppRegion: 'no-drag' }}>
         <div className="flex flex-col min-w-0 flex-1">
           {editingTitle ? (
             <input
@@ -307,6 +323,7 @@ export default function ChatPanel({ threadId, projectId, threadTitle, projectPat
               ${sessionCost.toFixed(4)}
             </span>
           )}
+
           {isActive ? (
             <>
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
@@ -324,6 +341,9 @@ export default function ChatPanel({ threadId, projectId, threadTitle, projectPat
         </div>
       </div>
 
+      {/* Context usage bar */}
+      {contextUsage && <ContextBar usage={contextUsage} onCompact={handleCompact} isActive={isActive} />}
+
       {/* Message area */}
       <div className="flex-1 overflow-y-auto">
         {loading ? (
@@ -338,6 +358,7 @@ export default function ChatPanel({ threadId, projectId, threadTitle, projectPat
             streamingContent={streamingContent}
             isStreaming={isStreaming}
             isThinking={isThinking}
+            isSessionActive={isActive}
           />
         )}
       </div>
@@ -352,6 +373,84 @@ export default function ChatPanel({ threadId, projectId, threadTitle, projectPat
           threadId={threadId}
         />
       </div>
+    </div>
+  );
+}
+
+const MAX_CONTEXT_TOKENS = 200_000;
+const BAR_SEGMENTS = 20;
+const CTX_WARNING = 60;
+const CTX_COMPACT_SUGGESTION = 75;
+const CTX_CRITICAL = 90;
+
+function ContextBar({ usage, onCompact, isActive }) {
+  const total = usage.input_tokens;
+  const pct = Math.min((total / MAX_CONTEXT_TOKENS) * 100, 100);
+  const roundedPct = Math.round(pct);
+  const filled = Math.round((pct / 100) * BAR_SEGMENTS);
+  const empty = BAR_SEGMENTS - filled;
+
+  // OMC-style thresholds: green → yellow (COMPRESS?) → red (CRITICAL)
+  let filledColor = 'text-emerald-500';
+  let labelColor = 'text-emerald-500';
+  let suffix = '';
+
+  if (roundedPct >= CTX_CRITICAL) {
+    filledColor = 'text-red-500';
+    labelColor = 'text-red-500';
+    suffix = ' CRITICAL';
+  } else if (roundedPct >= CTX_COMPACT_SUGGESTION) {
+    filledColor = 'text-yellow-500';
+    labelColor = 'text-yellow-500';
+    suffix = ' COMPRESS?';
+  } else if (roundedPct >= CTX_WARNING) {
+    filledColor = 'text-yellow-500';
+    labelColor = 'text-yellow-500';
+  }
+
+  const showWarningBanner = roundedPct >= 80;
+  const isCritical = roundedPct >= 90;
+
+  return (
+    <div className="shrink-0">
+      {/* OMC-style bar: ctx:[████░░░░░░]67% */}
+      <div className="flex items-center gap-2 px-4 py-1">
+        <span className="text-[11px] font-mono text-zinc-500">ctx:</span>
+        <span className="text-[11px] font-mono tracking-tight">
+          <span className="text-zinc-600">[</span>
+          <span className={filledColor}>{'█'.repeat(filled)}</span>
+          <span className="text-zinc-800">{'░'.repeat(empty)}</span>
+          <span className="text-zinc-600">]</span>
+        </span>
+        <span className={`text-[11px] font-mono tabular-nums ${labelColor}`}>
+          {roundedPct}%{suffix}
+        </span>
+        <span className="text-[10px] font-mono text-zinc-700 tabular-nums">
+          {(total / 1000).toFixed(0)}k/{MAX_CONTEXT_TOKENS / 1000}k
+        </span>
+
+        {/* Compact button — shown when context is getting high */}
+        {!isActive && roundedPct >= CTX_COMPACT_SUGGESTION && (
+          <button
+            onClick={onCompact}
+            className={`ml-1 text-[10px] font-mono px-1.5 py-0.5 rounded border transition-colors ${
+              isCritical
+                ? 'text-red-400 border-red-800/60 bg-red-950/40 hover:bg-red-900/50 hover:text-red-300'
+                : 'text-yellow-500 border-yellow-800/50 bg-yellow-950/30 hover:bg-yellow-900/40 hover:text-yellow-400'
+            }`}
+            title="Compact conversation to free context"
+          >
+            /compact
+          </button>
+        )}
+      </div>
+
+      {/* Warning banner like OMC: [!] ctx 85% >= 80% threshold - run /compact */}
+      {showWarningBanner && (
+        <div className={`px-4 py-0.5 text-[10px] font-mono ${isCritical ? 'text-red-500' : 'text-yellow-600'}`}>
+          [{isCritical ? '!!' : '!'}] ctx {roundedPct}% {'>'}= 80% threshold — {isActive ? 'waiting...' : 'run /compact'}
+        </div>
+      )}
     </div>
   );
 }

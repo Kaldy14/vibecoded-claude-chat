@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import Sidebar from './components/Sidebar.jsx';
 import ChatPanel from './components/ChatPanel.jsx';
 import ErrorBoundary from './components/ErrorBoundary.jsx';
@@ -37,6 +37,7 @@ export default function App() {
   const [activeProjectId, setActiveProjectId] = useState(initial.projectId);
   const [activeThreadId, setActiveThreadId] = useState(initial.threadId);
   const [activeSessions, setActiveSessions] = useState(new Set());
+  const [threadNotifications, setThreadNotifications] = useState(new Set());
   const [showAddProject, setShowAddProject] = useState(false);
 
   useEffect(() => {
@@ -83,8 +84,28 @@ export default function App() {
     refreshProjects();
   }, [refreshProjects]);
 
+  const activeThreadIdRef = useRef(activeThreadId);
+  activeThreadIdRef.current = activeThreadId;
+
   useWebSocket('*', useCallback((msg) => {
     if (!msg.threadId) return;
+
+    if (msg.type === 'thread_updated') {
+      // Server auto-generated a title — update threads state
+      if (msg.title) {
+        setThreads((prev) => {
+          const updated = {};
+          for (const [pid, list] of Object.entries(prev)) {
+            updated[pid] = list.map((t) =>
+              t.id === msg.threadId ? { ...t, title: msg.title } : t
+            );
+          }
+          return updated;
+        });
+      }
+      return;
+    }
+
     if (msg.type === 'status') {
       const active = msg.active === true;
       setActiveSessions((prev) => {
@@ -109,6 +130,15 @@ export default function App() {
         next.delete(msg.threadId);
         return next;
       });
+      // Mark as needing attention if not currently viewing this thread
+      if (msg.threadId !== activeThreadIdRef.current) {
+        setThreadNotifications((prev) => {
+          if (prev.has(msg.threadId)) return prev;
+          const next = new Set(prev);
+          next.add(msg.threadId);
+          return next;
+        });
+      }
     }
   }, []));
 
@@ -147,6 +177,13 @@ export default function App() {
     setActiveThreadId(threadId);
     setActiveProjectId(projectId);
     writeHash(projectId, threadId);
+    // Clear notification for this thread
+    setThreadNotifications((prev) => {
+      if (!prev.has(threadId)) return prev;
+      const next = new Set(prev);
+      next.delete(threadId);
+      return next;
+    });
   }, []);
 
   const onDeleteThread = useCallback(async (threadId) => {
@@ -184,7 +221,9 @@ export default function App() {
   }, [projects, activeProjectId, refreshProjects]);
 
   return (
-    <div className="flex h-screen bg-zinc-950 text-zinc-100 overflow-hidden">
+    <div className="relative flex h-screen bg-zinc-950 text-zinc-100 overflow-hidden">
+      {/* macOS title bar drag region for Electron hiddenInset */}
+      <div className="absolute top-0 left-0 right-0 h-[38px] z-50" style={{ WebkitAppRegion: 'drag' }} />
       <AddProjectModal open={showAddProject} onClose={closeAddProject} onSubmit={onCreateProject} />
       <Sidebar
         projects={projects}
@@ -192,6 +231,7 @@ export default function App() {
         activeThreadId={activeThreadId}
         activeProjectId={activeProjectId}
         activeSessions={activeSessions}
+        threadNotifications={threadNotifications}
         onSelectThread={onSelectThread}
         onCreateThread={onCreateThread}
         onCreateProject={openAddProject}
@@ -225,7 +265,7 @@ export default function App() {
 
 function EmptyState({ onCreateProject }) {
   return (
-    <div className="flex-1 flex flex-col items-center justify-center select-none">
+    <div className="flex-1 flex flex-col items-center justify-center select-none pt-[38px]">
       <div className="w-16 h-16 rounded-2xl bg-zinc-900 border border-zinc-800/60 flex items-center justify-center text-zinc-500">
         <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
           <path d="M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
